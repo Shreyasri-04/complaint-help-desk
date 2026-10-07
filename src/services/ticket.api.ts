@@ -1,6 +1,8 @@
 import { httpClient } from '@/api/httpClient';
 import { unwrapEnvelope } from '@/api/apiResponse';
 import type { ApiResponse } from '@/api/apiResponse';
+import { toPaginatedResponse } from '@/types/api';
+import type { BackendPage, PageRequest, PaginatedResponse } from '@/types/api';
 import type {
   Comment,
   CommentPayload,
@@ -61,28 +63,46 @@ function toComment(raw: BackendComment): Comment {
   };
 }
 
-function ticketParams(filters?: TicketFilters): Record<string, string> {
+function ticketParams(request?: TicketListRequest): Record<string, string> {
   const params: Record<string, string> = {};
-  if (filters?.status) {
-    params.status = filters.status;
+  if (request?.status) {
+    params.status = request.status;
   }
-  if (filters?.priority) {
-    params.priority = filters.priority;
+  if (request?.priority) {
+    params.priority = request.priority;
+  }
+  if (request != null) {
+    params.page = String(request.page);
+    params.size = String(request.size);
   }
   return params;
 }
 
+/** Paginated ticket query: filters plus the backend 0-based page. */
+export interface TicketListRequest extends TicketFilters, PageRequest {}
+
+function toTicketPage(raw: BackendPage<BackendTicket>): PaginatedResponse<Ticket> {
+  const page = toPaginatedResponse(raw);
+  return { ...page, content: page.content.map(toTicket) };
+}
+
 export const ticketService = {
-  list(filters?: TicketFilters): Promise<Ticket[]> {
+  /** Server-side paginated list (`GET /api/tickets?page=&size=`). */
+  list(request: TicketListRequest): Promise<PaginatedResponse<Ticket>> {
     return httpClient
-      .get<ApiResponse<BackendTicket[]>>('/api/tickets', { params: ticketParams(filters) })
-      .then((res) => unwrapEnvelope(res).map(toTicket));
+      .get<ApiResponse<BackendPage<BackendTicket>>>('/api/tickets', {
+        params: ticketParams(request),
+      })
+      .then((res) => toTicketPage(unwrapEnvelope(res)));
   },
 
-  getManagerTickets(filters?: TicketFilters): Promise<Ticket[]> {
+  /** Server-side paginated assigned-tickets list (`GET /api/tickets/manager`). */
+  getManagerTickets(request: TicketListRequest): Promise<PaginatedResponse<Ticket>> {
     return httpClient
-      .get<ApiResponse<BackendTicket[]>>('/api/tickets/manager', { params: ticketParams(filters) })
-      .then((res) => unwrapEnvelope(res).map(toTicket));
+      .get<ApiResponse<BackendPage<BackendTicket>>>('/api/tickets/manager', {
+        params: ticketParams(request),
+      })
+      .then((res) => toTicketPage(unwrapEnvelope(res)));
   },
 
   getById(id: number): Promise<Ticket> {

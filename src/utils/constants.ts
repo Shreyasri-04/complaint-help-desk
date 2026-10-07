@@ -7,6 +7,9 @@ type ChipColor = NonNullable<ChipProps['color']>;
 export const ALL_STATUSES: TicketStatus[] = Object.values(TICKET_STATUS);
 export const ALL_PRIORITIES: TicketPriority[] = Object.values(TICKET_PRIORITY);
 
+/** Backend page size for all paginated tables (backend pages are 0-based). */
+export const DEFAULT_PAGE_SIZE = 10;
+
 export const TICKET_STATUS_META: Record<TicketStatus, { label: string; color: ChipColor }> = {
   [TICKET_STATUS.OPEN]: { label: 'Open', color: 'info' },
   [TICKET_STATUS.IN_PROGRESS]: { label: 'In Progress', color: 'warning' },

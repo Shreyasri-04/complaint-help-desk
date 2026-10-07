@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -10,10 +10,14 @@ import {
 import { RefreshOutlined as RefreshIcon } from '@mui/icons-material';
 import { PageHeader } from '@/components/common/PageHeader';
 import { ErrorBanner } from '@/components/common/ErrorBanner';
+import { TablePaginationBar } from '@/components/common/TablePaginationBar';
 import { TicketList } from '@/components/tickets/TicketList';
-import { dashboardService, summarizeTickets } from '@/services/dashboard.api';
+import { ticketService } from '@/services/ticket.api';
+import { dashboardService } from '@/services/dashboard.api';
+import type { DashboardStats } from '@/services/dashboard.api';
 import { ApiError } from '@/api/ApiError';
 import { useAuth } from '@/context/useAuth';
+import { DEFAULT_PAGE_SIZE } from '@/utils/constants';
 import { MESSAGES } from '@/utils/messages';
 import type { Ticket } from '@/types/ticket';
 
@@ -35,24 +39,44 @@ function StatCard({ label, value, color }: { label: string; value: number; color
 /**
  * Manager-only assigned-tickets list (`/assigned`): tickets raised by users
  * assigned to the logged-in manager (backend relationship, never hardcoded).
- * The table is View-only; View navigates to `/tickets/:id` where
- * Approve/Reject live behind a confirmation dialog. Stats derive from the
- * fetched list and refresh whenever the data is refetched.
+ * Uses `GET /api/tickets/manager?page=&size=` — only the requested page is
+ * fetched. The table is View-only; View navigates to `/tickets/:id` where
+ * Approve/Reject live behind a confirmation dialog. Stat cards come from
+ * page metadata (no full dataset fetch).
  */
 export function ManagerDashboard() {
   const { username } = useAuth();
   const navigate = useNavigate();
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [stats, setStats] = useState<DashboardStats>({ total: 0, open: 0, approved: 0, rejected: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ApiError | null>(null);
 
-  const loadTickets = useCallback(async () => {
+  const [page, setPage] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [totalElements, setTotalElements] = useState(0);
+
+  const loadStats = useCallback(async () => {
+    try {
+      setStats(await dashboardService.getTicketStats('manager'));
+    } catch (err) {
+      setError(ApiError.from(err));
+    }
+  }, []);
+
+  const loadTickets = useCallback(async (requestedPage: number) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await dashboardService.getDashboardData();
-      setTickets(data.tickets);
+      const result = await ticketService.getManagerTickets({
+        page: requestedPage,
+        size: DEFAULT_PAGE_SIZE,
+      });
+      setTickets(result.content);
+      setPage(result.page);
+      setTotalPages(result.totalPages);
+      setTotalElements(result.totalElements);
     } catch (err) {
       setError(ApiError.from(err));
     } finally {
@@ -61,11 +85,17 @@ export function ManagerDashboard() {
   }, []);
 
   useEffect(() => {
-    void loadTickets();
-  }, [loadTickets]);
+    void loadStats();
+  }, [loadStats]);
 
-  // Stats derive from the ticket list, so they refresh with every fetch.
-  const stats = useMemo(() => summarizeTickets(tickets), [tickets]);
+  useEffect(() => {
+    void loadTickets(page);
+  }, [loadTickets, page]);
+
+  const handleRefresh = () => {
+    void loadStats();
+    void loadTickets(page);
+  };
 
   const openTicket = (ticket: Ticket) => {
     if (ticket.id != null) {
@@ -83,13 +113,13 @@ export function ManagerDashboard() {
             : 'Tickets raised by users assigned to you.'
         }
         actions={
-          <Button startIcon={<RefreshIcon />} color="inherit" onClick={() => void loadTickets()}>
+          <Button startIcon={<RefreshIcon />} color="inherit" onClick={handleRefresh}>
             Refresh
           </Button>
         }
       />
 
-      <ErrorBanner error={error} onRetry={() => void loadTickets()} />
+      <ErrorBanner error={error} onRetry={handleRefresh} />
 
       {!loading ? (
         <Grid container spacing={2} sx={{ mb: 3 }}>
@@ -125,6 +155,16 @@ export function ManagerDashboard() {
         emptyDescription={MESSAGES.dashboard.emptyDescription}
         onView={openTicket}
       />
+      {!loading ? (
+        <TablePaginationBar
+          page={page}
+          totalPages={totalPages}
+          totalElements={totalElements}
+          pageSize={DEFAULT_PAGE_SIZE}
+          disabled={loading}
+          onChange={setPage}
+        />
+      ) : null}
     </Box>
   );
 }

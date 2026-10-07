@@ -22,6 +22,7 @@ import { PageLoader } from '@/components/common/PageLoader';
 import { ErrorBanner } from '@/components/common/ErrorBanner';
 import { EmptyState } from '@/components/common/EmptyState';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { TablePaginationBar } from '@/components/common/TablePaginationBar';
 import { TicketList } from '@/components/tickets/TicketList';
 import { TicketFormDialog } from '@/components/forms/TicketFormDialog';
 import { ticketService } from '@/services/ticket.api';
@@ -29,17 +30,19 @@ import { categoryService } from '@/services/category.api';
 import { ApiError } from '@/api/ApiError';
 import { useAuth } from '@/context/useAuth';
 import { ROUTES } from '@/utils/routes';
-import { ALL_PRIORITIES, ALL_STATUSES, TICKET_PRIORITY_META, TICKET_STATUS_META } from '@/utils/constants';
+import { ALL_PRIORITIES, ALL_STATUSES, DEFAULT_PAGE_SIZE, TICKET_PRIORITY_META, TICKET_STATUS_META } from '@/utils/constants';
 import type { Category } from '@/types/category';
-import type { Ticket, TicketFilters, TicketStatus, TicketPriority } from '@/types/ticket';
+import type { Ticket, TicketStatus, TicketPriority } from '@/types/ticket';
 
 const ANY = '';
 
 /**
- * Role-aware ticket list.
+ * Role-aware ticket list with server-side pagination.
  *
  * Data always flows through the service layer (`ticketService`, token
  * attached by the axios interceptor); components never call APIs directly.
+ * Only the requested backend page (`?page=&size=`, 0-based) is fetched —
+ * the full dataset is never transferred. Changing a filter resets to page 0.
  *
  * Permission-based UI (UX only, backend is the final authority):
  * - USER/MANAGER → "My Tickets": View + Edit own tickets, "New ticket".
@@ -49,13 +52,19 @@ const ANY = '';
  *   No "New ticket" — admins cannot create tickets.
  */
 export function TicketListPage({ autoCreate = false }: { autoCreate?: boolean }) {
-  const { isAdmin, isUser, isManager, username } = useAuth();
+  const { isAdmin, isUser, isManager } = useAuth();
   const navigate = useNavigate();
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
+  // In create mode (/tickets/new) the page is only a host for the create
+  // dialog — the ticket list is never fetched or rendered.
+  const [loading, setLoading] = useState(!autoCreate);
   const [error, setError] = useState<ApiError | null>(null);
+
+  const [page, setPage] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [totalElements, setTotalElements] = useState(0);
 
   const [status, setStatus] = useState<TicketStatus | typeof ANY>(ANY);
   const [priority, setPriority] = useState<TicketPriority | typeof ANY>(ANY);
@@ -68,40 +77,26 @@ export function TicketListPage({ autoCreate = false }: { autoCreate?: boolean })
 
   const canCreate = isUser || isManager;
 
-  const loadTickets = useCallback(async () => {
+  const loadTickets = useCallback(async (requestedPage: number) => {
     setLoading(true);
     setError(null);
     try {
-      const filters: TicketFilters = {};
-      if (status) {
-        filters.status = status;
-      }
-      if (priority) {
-        filters.priority = priority;
-      }
-      const fetched = await ticketService.list(filters);
-      // "My Tickets" must show only the logged-in user's own tickets.
-      // GET /api/tickets can return other users' tickets for a manager's
-      // token, so scope the rendered list to the session owner here (display
-      // only — the backend remains the authorization boundary). Tickets with
-      // no owner info are kept so nothing own is hidden by a missing field.
-      // Admins are exempt: they are allowed to see all tickets.
-      if (!isAdmin && username != null) {
-        setTickets(
-          fetched.filter((ticket) => {
-            const owner = ticket.createdBy ?? ticket.username;
-            return owner == null || owner === username;
-          }),
-        );
-      } else {
-        setTickets(fetched);
-      }
+      const result = await ticketService.list({
+        page: requestedPage,
+        size: DEFAULT_PAGE_SIZE,
+        ...(status ? { status } : {}),
+        ...(priority ? { priority } : {}),
+      });
+      setTickets(result.content);
+      setPage(result.page);
+      setTotalPages(result.totalPages);
+      setTotalElements(result.totalElements);
     } catch (err) {
       setError(ApiError.from(err));
     } finally {
       setLoading(false);
     }
-  }, [status, priority, isAdmin, username]);
+  }, [status, priority]);
 
   const loadCategories = useCallback(async () => {
     try {
@@ -112,8 +107,11 @@ export function TicketListPage({ autoCreate = false }: { autoCreate?: boolean })
   }, []);
 
   useEffect(() => {
-    void loadTickets();
-  }, [loadTickets]);
+    if (autoCreate) {
+      return;
+    }
+    void loadTickets(page);
+  }, [loadTickets, page, autoCreate]);
 
   useEffect(() => {
     void loadCategories();
@@ -122,6 +120,7 @@ export function TicketListPage({ autoCreate = false }: { autoCreate?: boolean })
   const clearFilters = () => {
     setStatus(ANY);
     setPriority(ANY);
+    setPage(0);
   };
 
   const hasFilters = Boolean(status || priority);
@@ -141,7 +140,13 @@ export function TicketListPage({ autoCreate = false }: { autoCreate?: boolean })
       await ticketService.delete(deleting.id);
       setDeleting(null);
       setNotice('Ticket deleted successfully.');
-      await loadTickets();
+      // If the last row of the page was removed, step back so the page
+      // never renders empty while earlier pages still have rows.
+      if (tickets.length <= 1 && page > 0) {
+        setPage(page - 1);
+      } else {
+        await loadTickets(page);
+      }
     } catch (err) {
       setError(ApiError.from(err));
     } finally {
@@ -178,7 +183,7 @@ export function TicketListPage({ autoCreate = false }: { autoCreate?: boolean })
       />
 
       {/* ❌ Error state */}
-      <ErrorBanner error={error} onRetry={() => void loadTickets()} />
+      <ErrorBanner error={error} onRetry={() => void loadTickets(page)} />
 
       <Paper variant="outlined" sx={{ p: 2, mb: 3 }}>
         <Stack
@@ -192,7 +197,10 @@ export function TicketListPage({ autoCreate = false }: { autoCreate?: boolean })
               labelId="filter-status-label"
               label="Status"
               value={status}
-              onChange={(e) => setStatus(e.target.value as TicketStatus | typeof ANY)}
+              onChange={(e) => {
+                setStatus(e.target.value as TicketStatus | typeof ANY);
+                setPage(0);
+              }}
             >
               <MenuItem value={ANY}>Any status</MenuItem>
               {ALL_STATUSES.map((value) => (
@@ -208,7 +216,10 @@ export function TicketListPage({ autoCreate = false }: { autoCreate?: boolean })
               labelId="filter-priority-label"
               label="Priority"
               value={priority}
-              onChange={(e) => setPriority(e.target.value as TicketPriority | typeof ANY)}
+              onChange={(e) => {
+                setPriority(e.target.value as TicketPriority | typeof ANY);
+                setPage(0);
+              }}
             >
               <MenuItem value={ANY}>Any priority</MenuItem>
               {ALL_PRIORITIES.map((value) => (
@@ -219,7 +230,7 @@ export function TicketListPage({ autoCreate = false }: { autoCreate?: boolean })
             </Select>
           </FormControl>
           <Box sx={{ display: 'flex', gap: 1 }}>
-            <Button startIcon={<RefreshIcon />} onClick={() => void loadTickets()} color="inherit">
+            <Button startIcon={<RefreshIcon />} onClick={() => void loadTickets(page)} color="inherit">
               Apply
             </Button>
             {hasFilters ? (
@@ -249,15 +260,25 @@ export function TicketListPage({ autoCreate = false }: { autoCreate?: boolean })
         </Paper>
       ) : (
         /* ✅ Success state */
-        <TicketList
-          tickets={tickets}
-          onView={openTicket}
-          onEdit={(ticket) => {
-            setEditing(ticket);
-            setFormOpen(true);
-          }}
-          onDelete={isAdmin ? setDeleting : undefined}
-        />
+        <>
+          <TicketList
+            tickets={tickets}
+            onView={openTicket}
+            onEdit={(ticket) => {
+              setEditing(ticket);
+              setFormOpen(true);
+            }}
+            onDelete={isAdmin ? setDeleting : undefined}
+          />
+          <TablePaginationBar
+            page={page}
+            totalPages={totalPages}
+            totalElements={totalElements}
+            pageSize={DEFAULT_PAGE_SIZE}
+            disabled={loading}
+            onChange={setPage}
+          />
+        </>
       )}
 
       {canCreate || editing ? (
@@ -272,7 +293,13 @@ export function TicketListPage({ autoCreate = false }: { autoCreate?: boolean })
               navigate(ROUTES.tickets, { replace: true });
             }
           }}
-          onSaved={() => void loadTickets()}
+          onSaved={() => {
+            // In create mode the dialog closes onto the ticket list route,
+            // which loads its own page — no list fetch needed here.
+            if (!autoCreate) {
+              void loadTickets(page);
+            }
+          }}
         />
       ) : null}
 

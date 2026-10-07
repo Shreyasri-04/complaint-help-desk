@@ -23,9 +23,11 @@ import { ErrorBanner } from '@/components/common/ErrorBanner';
 import { EmptyState } from '@/components/common/EmptyState';
 import { PageLoader } from '@/components/common/PageLoader';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { TablePaginationBar } from '@/components/common/TablePaginationBar';
 import { userService } from '@/services/user.api';
 import { ApiError } from '@/api/ApiError';
 import { useAuth } from '@/context/useAuth';
+import { DEFAULT_PAGE_SIZE } from '@/utils/constants';
 import type { User } from '@/types/user';
 
 type StatusAction = { user: User; enable: boolean };
@@ -50,22 +52,28 @@ export function TeamPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ApiError | null>(null);
 
+  const [page, setPage] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [totalElements, setTotalElements] = useState(0);
+
   const [pending, setPending] = useState<StatusAction | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState<ApiError | null>(null);
   const [assigningId, setAssigningId] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const loadData = useCallback(async () => {
+  const loadUsers = useCallback(async (requestedPage: number) => {
     setLoading(true);
     setError(null);
     try {
-      const [allUsers, allManagers] = await Promise.all([
-        userService.list(),
-        userService.listManagers().catch(() => [] as User[]),
-      ]);
-      setUsers(allUsers);
-      setManagers(allManagers);
+      const result = await userService.listPage({
+        page: requestedPage,
+        size: DEFAULT_PAGE_SIZE,
+      });
+      setUsers(result.content);
+      setPage(result.page);
+      setTotalPages(result.totalPages);
+      setTotalElements(result.totalElements);
     } catch (err) {
       setError(ApiError.from(err));
     } finally {
@@ -73,9 +81,21 @@ export function TeamPage() {
     }
   }, []);
 
+  const loadManagers = useCallback(async () => {
+    try {
+      setManagers(await userService.listManagers());
+    } catch {
+      setManagers([]);
+    }
+  }, []);
+
   useEffect(() => {
-    void loadData();
-  }, [loadData]);
+    void loadUsers(page);
+  }, [loadUsers, page]);
+
+  useEffect(() => {
+    void loadManagers();
+  }, [loadManagers]);
 
   const confirmAction = async () => {
     if (pending == null) {
@@ -123,7 +143,7 @@ export function TeamPage() {
         subtitle="View users, account status, manager assignment, and enable or disable access."
       />
 
-      <ErrorBanner error={error} onRetry={() => void loadData()} />
+      <ErrorBanner error={error} onRetry={() => void loadUsers(page)} />
 
       {loading ? (
         <PageLoader />
@@ -136,6 +156,7 @@ export function TeamPage() {
           />
         </Paper>
       ) : (
+        <>
         <TableContainer component={Paper} variant="outlined">
           <Table sx={{ minWidth: 720 }} aria-label="users table">
             <TableHead>
@@ -215,6 +236,15 @@ export function TeamPage() {
             </TableBody>
           </Table>
         </TableContainer>
+        <TablePaginationBar
+          page={page}
+          totalPages={totalPages}
+          totalElements={totalElements}
+          pageSize={DEFAULT_PAGE_SIZE}
+          disabled={loading}
+          onChange={setPage}
+        />
+        </>
       )}
 
       <ConfirmDialog

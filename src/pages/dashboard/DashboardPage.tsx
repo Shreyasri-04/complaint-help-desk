@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -16,10 +16,10 @@ import { PageHeader } from '@/components/common/PageHeader';
 import { ErrorBanner } from '@/components/common/ErrorBanner';
 import { PageLoader } from '@/components/common/PageLoader';
 import { TicketList } from '@/components/tickets/TicketList';
-import { ticketService } from '@/services/ticket.api';
 import { userService } from '@/services/user.api';
 import { categoryService } from '@/services/category.api';
-import { dashboardService, summarizeTickets } from '@/services/dashboard.api';
+import { dashboardService } from '@/services/dashboard.api';
+import type { DashboardStats } from '@/services/dashboard.api';
 import { ApiError } from '@/api/ApiError';
 import { useAuth } from '@/context/useAuth';
 import { ROUTES } from '@/utils/routes';
@@ -70,6 +70,7 @@ export function DashboardPage() {
   const navigate = useNavigate();
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [stats, setStats] = useState<DashboardStats>({ total: 0, open: 0, approved: 0, rejected: 0 });
   const [userTotal, setUserTotal] = useState(0);
   const [userEnabled, setUserEnabled] = useState(0);
   const [categoryTotal, setCategoryTotal] = useState(0);
@@ -81,20 +82,34 @@ export function DashboardPage() {
     setError(null);
     try {
       if (isAdmin) {
-        const [users, allTickets, categories] = await Promise.all([
+        // Ticket numbers come from page metadata (no full fetch). The
+        // enabled/disabled user split still uses the full user list until
+        // the backend provides counts or an `enabled` filter.
+        const [ticketStats, recent, users, categories] = await Promise.all([
+          dashboardService.getTicketStats('all'),
+          dashboardService.getRecentTickets('all', 5),
           userService.list(),
-          ticketService.list(),
           categoryService.list().catch(() => []),
         ]);
+        setStats(ticketStats);
+        setTickets(recent);
         setUserTotal(users.length);
         setUserEnabled(users.filter((user) => user.enabled !== false).length);
         setCategoryTotal(categories.length);
-        setTickets(allTickets);
       } else if (isManager) {
-        const data = await dashboardService.getDashboardData();
-        setTickets(data.tickets);
+        const [ticketStats, recent] = await Promise.all([
+          dashboardService.getTicketStats('manager'),
+          dashboardService.getRecentTickets('manager', 5),
+        ]);
+        setStats(ticketStats);
+        setTickets(recent);
       } else {
-        setTickets(await ticketService.list());
+        const [ticketStats, recent] = await Promise.all([
+          dashboardService.getTicketStats('own'),
+          dashboardService.getRecentTickets('own', 5),
+        ]);
+        setStats(ticketStats);
+        setTickets(recent);
       }
     } catch (err) {
       setError(ApiError.from(err));
@@ -107,8 +122,7 @@ export function DashboardPage() {
     void load();
   }, [load]);
 
-  const stats = useMemo(() => summarizeTickets(tickets), [tickets]);
-  const recent = useMemo(() => tickets.slice(0, 5), [tickets]);
+  const recent = tickets;
 
   const openTicket = (ticket: Ticket) => {
     if (ticket.id != null) {

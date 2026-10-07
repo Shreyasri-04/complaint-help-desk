@@ -1,17 +1,44 @@
 import { httpClient } from '@/api/httpClient';
-import { unwrapEnvelope } from '@/api/apiResponse';
+import { fetchAllPages, unwrapEnvelope } from '@/api/apiResponse';
 import type { ApiResponse } from '@/api/apiResponse';
+import { toPaginatedResponse } from '@/types/api';
+import type { BackendPage, PageRequest, PaginatedResponse } from '@/types/api';
 import type { User } from '@/types/user';
 
 export const userService = {
 
+  /**
+   * Complete user list — used ONLY for the admin dashboard enabled/disabled
+   * counts until the backend provides counts or an `enabled` filter.
+   * Tables must use `listPage` below.
+   */
   list(): Promise<User[]> {
-    return httpClient.get<ApiResponse<User[]>>('/api/users').then(unwrapEnvelope);
+    return fetchAllPages((request) => userService.listPage(request));
+  },
+
+  /** Server-side paginated users (`GET /api/users?page=&size=`). */
+  listPage(request: PageRequest): Promise<PaginatedResponse<User>> {
+    return httpClient
+      .get<ApiResponse<BackendPage<User>>>('/api/users', {
+        params: { page: String(request.page), size: String(request.size) },
+      })
+      .then((res) => toPaginatedResponse(unwrapEnvelope(res)));
   },
 
 
+  /**
+   * Manager dropdown options. Tolerates both a bare array and a paginated
+   * payload, since list endpoints now page by default.
+   */
   listManagers(): Promise<User[]> {
-    return httpClient.get<ApiResponse<User[]>>('/api/users/managers').then(unwrapEnvelope);
+    return httpClient
+      .get<ApiResponse<User[] | BackendPage<User>>>('/api/users/managers', {
+        params: { page: '0', size: '100' },
+      })
+      .then((res) => {
+        const data = unwrapEnvelope(res);
+        return Array.isArray(data) ? data : toPaginatedResponse(data).content;
+      });
   },
 
 

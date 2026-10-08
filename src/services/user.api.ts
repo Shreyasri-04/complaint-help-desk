@@ -49,12 +49,11 @@ export const userService = {
 
   /**
    * Enables/disables a user account (ADMIN only, backend-enforced).
-   * Uses the existing `/api/users` resource with per-user status actions.
+   * Backend contract: `PATCH /api/users/{id}/status` with `{ enabled }`.
    */
   setEnabled(id: number, enabled: boolean): Promise<User> {
-    const action = enabled ? 'enable' : 'disable';
     return httpClient
-      .put<ApiResponse<User>>(`/api/users/${id}/${action}`)
+      .patch<ApiResponse<User>>(`/api/users/${id}/status`, { enabled })
       .then(unwrapEnvelope);
   },
 
